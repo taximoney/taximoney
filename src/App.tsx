@@ -20,7 +20,10 @@ import {
   CheckCircle2,
   AlertCircle,
   X,
-  BarChart3
+  BarChart3,
+  LogIn,
+  LogOut,
+  User as UserIcon
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -33,32 +36,130 @@ import {
   ResponsiveContainer,
   Cell
 } from 'recharts';
-import { Trip, Shift, PaymentMethod, AppConfig } from './types';
+import { Trip as LocalTrip, Shift, PaymentMethod, AppConfig } from './types';
 import { cn, formatCurrency, getCurrentTime } from './lib/utils';
+import { 
+  auth, 
+  db, 
+  signIn, 
+  logOut, 
+  saveTrip, 
+  deleteTrip as deleteFirestoreTrip, 
+  saveShift,
+  deleteShift as deleteFirestoreShift,
+  updateDebt,
+  saveUserConfig, 
+  getUserConfig,
+  Trip as FirestoreTrip,
+  OperationType,
+  handleFirestoreError
+} from './firebase';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'turno' | 'resumen' | 'stats' | 'ajustes'>('turno');
+  const [user, setUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
   
   // State
-  const [currentTrips, setCurrentTrips] = useState<Trip[]>(() => {
-    const saved = localStorage.getItem('taxi_current_trips');
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [history, setHistory] = useState<Shift[]>(() => {
-    const saved = localStorage.getItem('taxi_history');
-    return saved ? JSON.parse(saved) : [];
-  });
-  
-  const [debt, setDebt] = useState<number>(() => {
-    const saved = localStorage.getItem('taxi_debt');
-    return saved ? parseFloat(saved) : 0;
-  });
-  
-  const [config, setConfig] = useState<AppConfig>(() => {
-    const saved = localStorage.getItem('taxi_config');
-    return saved ? JSON.parse(saved) : { driverPercent: 40 };
-  });
+  const [currentTrips, setCurrentTrips] = useState<LocalTrip[]>([]);
+  const [history, setHistory] = useState<Shift[]>([]);
+  const [debt, setDebt] = useState<number>(0);
+  const [config, setConfig] = useState<AppConfig>({ driverPercent: 40 });
+
+  // Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Firestore Sync
+  useEffect(() => {
+    if (!user) {
+      setCurrentTrips([]);
+      setHistory([]);
+      setDebt(0);
+      return;
+    }
+
+    // Sync Config & Debt
+    getUserConfig(user.uid).then(savedConfig => {
+      if (savedConfig) {
+        setConfig({ driverPercent: savedConfig.driverPercent });
+        setDebt(savedConfig.accumulatedDebt || 0);
+      }
+    });
+
+    // Sync Trips (Real-time)
+    const qTrips = query(
+      collection(db, 'trips'),
+      where('userId', '==', user.uid),
+      orderBy('timestamp', 'desc')
+    );
+
+    const unsubscribeTrips = onSnapshot(qTrips, (snapshot) => {
+      const tripsData: LocalTrip[] = snapshot.docs.map(doc => {
+        const data = doc.data() as FirestoreTrip;
+        return {
+          id: doc.id,
+          amount: data.amount,
+          tip: data.tip,
+          method: data.paymentMethod === 'cash' ? 'Efectivo' : 'Tarjeta',
+          time: new Date(data.timestamp).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+          timestamp: new Date(data.timestamp).getTime()
+        };
+      });
+      setCurrentTrips(tripsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'trips');
+    });
+
+    // Sync History (Real-time)
+    const qShifts = query(
+      collection(db, 'shifts'),
+      where('userId', '==', user.uid),
+      orderBy('timestamp', 'desc')
+    );
+
+    const unsubscribeShifts = onSnapshot(qShifts, (snapshot) => {
+      const shiftsData: Shift[] = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          date: data.date,
+          month: data.month,
+          hours: data.hours,
+          totals: data.totals,
+          trips: [], // We don't store trips inside shift doc to save space, or we could
+          config: { driverPercent: data.totals.driverPercent || 40 }
+        } as Shift;
+      });
+      setHistory(shiftsData);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'shifts');
+    });
+
+    return () => {
+      unsubscribeTrips();
+      unsubscribeShifts();
+    };
+  }, [user]);
+
+  // Save Config to Firestore
+  useEffect(() => {
+    if (user) {
+      saveUserConfig({
+        userId: user.uid,
+        driverPercent: config.driverPercent,
+        lastUpdated: new Date().toISOString(),
+        accumulatedDebt: debt
+      });
+    }
+  }, [config, user, debt]);
 
   const [hoursInput, setHoursInput] = useState<string>('');
   const [amountInput, setAmountInput] = useState<string>('');
@@ -80,23 +181,6 @@ export default function App() {
   const showConfirm = (title: string, message: string, onConfirm: () => void) => {
     setModal({ show: true, title, message, onConfirm, type: 'confirm' });
   };
-
-  // Persistence
-  useEffect(() => {
-    localStorage.setItem('taxi_current_trips', JSON.stringify(currentTrips));
-  }, [currentTrips]);
-
-  useEffect(() => {
-    localStorage.setItem('taxi_history', JSON.stringify(history));
-  }, [history]);
-
-  useEffect(() => {
-    localStorage.setItem('taxi_debt', debt.toString());
-  }, [debt]);
-
-  useEffect(() => {
-    localStorage.setItem('taxi_config', JSON.stringify(config));
-  }, [config]);
 
   // Calculations
   const currentTotals = useMemo(() => {
@@ -150,32 +234,40 @@ export default function App() {
     return Object.values(months).reverse(); // Reverse to show latest months first or last depending on preference
   }, [history]);
 
-  const addTrip = (method: PaymentMethod) => {
+  const addTrip = async (method: PaymentMethod) => {
+    if (!user) {
+      showAlert("Inicia Sesión", "Debes iniciar sesión para guardar tus viajes en la nube.");
+      return;
+    }
+
     const amount = parseFloat(amountInput.replace(',', '.')) || 0;
     const tip = parseFloat(tipInput.replace(',', '.')) || 0;
 
     if (amount <= 0 && tip <= 0) return;
 
-    const newTrip: Trip = {
-      id: crypto.randomUUID(),
+    const tripData: Omit<FirestoreTrip, 'id'> = {
+      userId: user.uid,
       amount,
       tip,
-      method,
-      time: getCurrentTime(),
-      timestamp: Date.now()
+      paymentMethod: method === 'Efectivo' ? 'cash' : 'card',
+      timestamp: new Date().toISOString(),
+      driverPercent: config.driverPercent
     };
 
-    setCurrentTrips([newTrip, ...currentTrips]);
+    await saveTrip(tripData);
     setAmountInput('');
     setTipInput('');
   };
 
-  const deleteTrip = (id: string) => {
-    setCurrentTrips(currentTrips.filter(t => t.id !== id));
+  const deleteTrip = async (id: string) => {
+    showConfirm("Borrar Viaje", "¿Seguro que quieres borrar este registro?", async () => {
+      await deleteFirestoreTrip(id);
+      setModal({ ...modal, show: false });
+    });
   };
 
-  const closeShift = () => {
-    if (currentTrips.length === 0) return;
+  const closeShift = async () => {
+    if (currentTrips.length === 0 || !user) return;
     
     const hours = parseFloat(hoursInput.replace(',', '.')) || 0;
     if (hours <= 0) {
@@ -183,13 +275,12 @@ export default function App() {
       return;
     }
 
-    showConfirm("Cerrar Turno", "¿Terminar el turno y guardar en el historial?", () => {
+    showConfirm("Cerrar Turno", "¿Terminar el turno y guardar en el historial?", async () => {
       const now = new Date();
-      const newShift: Shift = {
-        id: crypto.randomUUID(),
+      const shiftData = {
+        userId: user.uid,
         date: now.toLocaleDateString('es-ES'),
         month: now.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }).toUpperCase(),
-        trips: [...currentTrips],
         hours,
         totals: {
           caja: currentTotals.caja,
@@ -199,37 +290,163 @@ export default function App() {
           efectivo: currentTotals.efectivo,
           mio: currentTotals.mio,
           jefe: currentTotals.jefe,
-          ajuste: -currentTotals.ajuste
+          ajuste: -currentTotals.ajuste,
+          driverPercent: config.driverPercent
         },
-        config: { ...config }
+        timestamp: now.toISOString()
       };
 
-      setDebt(prev => prev - currentTotals.ajuste);
-      setHistory([newShift, ...history]);
-      setCurrentTrips([]);
-      setHoursInput('');
-      setActiveTab('resumen');
-      setModal({ ...modal, show: false });
+      try {
+        // Save shift
+        await saveShift(shiftData);
+        
+        // Update debt
+        const newDebt = debt - currentTotals.ajuste;
+        setDebt(newDebt);
+        await updateDebt(user.uid, newDebt);
+
+        // Delete current trips (they are now part of the shift)
+        // In a real app, we might want to mark them as 'closed' instead of deleting
+        // But for this simple app, we'll delete them from the 'trips' collection
+        for (const trip of currentTrips) {
+          await deleteFirestoreTrip(trip.id);
+        }
+
+        setHoursInput('');
+        setActiveTab('resumen');
+        setModal({ ...modal, show: false });
+      } catch (error) {
+        showAlert("Error", "No se pudo cerrar el turno. Inténtalo de nuevo.");
+      }
     });
   };
 
-  const resetDebt = () => {
-    showConfirm("Reiniciar Saldo", "¿Poner el saldo acumulado a cero?", () => {
+  const resetDebt = async () => {
+    if (!user) return;
+    showConfirm("Reiniciar Saldo", "¿Poner el saldo acumulado a cero?", async () => {
       setDebt(0);
+      await updateDebt(user.uid, 0);
       setModal({ ...modal, show: false });
     });
   };
 
-  const deleteShift = (id: string) => {
+  const exportToCSV = () => {
+    if (history.length === 0) {
+      showAlert("Exportar Datos", "No hay historial para exportar.");
+      return;
+    }
+
+    const headers = ["Fecha", "Mes", "Horas", "Caja Total", "Propinas", "Mi Parte", "Jefe", "Ajuste"];
+    const rows = history.map(shift => [
+      shift.date,
+      shift.month,
+      shift.hours.toString(),
+      shift.totals.caja.toFixed(2),
+      shift.totals.propinas.toFixed(2),
+      shift.totals.mio.toFixed(2),
+      shift.totals.jefe.toFixed(2),
+      shift.totals.ajuste.toFixed(2)
+    ]);
+
+    const csvContent = [
+      headers.join(","),
+      ...rows.map(row => row.join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `TaxiMoney_Historial_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const deleteShift = async (id: string) => {
+    if (!user) return;
     const shiftToDelete = history.find(s => s.id === id);
     if (!shiftToDelete) return;
 
-    showConfirm("Borrar Turno", "¿Seguro que quieres borrar este turno? El saldo acumulado se ajustará automáticamente.", () => {
-      setDebt(prev => prev - shiftToDelete.totals.ajuste);
-      setHistory(history.filter(s => s.id !== id));
-      setModal({ ...modal, show: false });
+    showConfirm("Borrar Turno", "¿Seguro que quieres borrar este turno? El saldo acumulado se ajustará automáticamente.", async () => {
+      try {
+        const newDebt = debt - shiftToDelete.totals.ajuste;
+        setDebt(newDebt);
+        await updateDebt(user.uid, newDebt);
+        await deleteFirestoreShift(id);
+        setModal({ ...modal, show: false });
+      } catch (error) {
+        showAlert("Error", "No se pudo borrar el turno.");
+      }
     });
   };
+
+  if (!isAuthReady) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-black">
+        <div className="text-center space-y-4">
+          <div className="w-16 h-16 bg-taxi-yellow rounded-2xl mx-auto animate-bounce flex items-center justify-center shadow-2xl shadow-taxi-yellow/20">
+            <img src="/icono.png" alt="Logo" className="w-10 h-10" />
+          </div>
+          <p className="text-white/40 font-mono text-xs uppercase tracking-widest">Cargando TaxiMoney...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-black p-6">
+        <div className="w-full max-w-sm space-y-8">
+          <div className="text-center space-y-4">
+            <div className="w-20 h-20 bg-taxi-yellow rounded-3xl mx-auto flex items-center justify-center shadow-2xl shadow-taxi-yellow/20">
+              <img src="/icono.png" alt="Logo" className="w-12 h-12" />
+            </div>
+            <div>
+              <h1 className="text-3xl font-black tracking-tight text-white">TaxiMoney</h1>
+              <p className="text-white/40 text-sm">Tu recaudación, siempre a salvo en la nube.</p>
+            </div>
+          </div>
+
+          <div className="glass-card p-8 rounded-[2rem] border-white/10 space-y-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-4 text-white/60">
+                <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center shrink-0">
+                  <CheckCircle2 size={20} className="text-green-500" />
+                </div>
+                <p className="text-sm">Sincronización en tiempo real</p>
+              </div>
+              <div className="flex items-center gap-4 text-white/60">
+                <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center shrink-0">
+                  <CheckCircle2 size={20} className="text-green-500" />
+                </div>
+                <p className="text-sm">Acceso desde cualquier móvil</p>
+              </div>
+              <div className="flex items-center gap-4 text-white/60">
+                <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center shrink-0">
+                  <CheckCircle2 size={20} className="text-green-500" />
+                </div>
+                <p className="text-sm">Historial indestructible</p>
+              </div>
+            </div>
+
+            <button 
+              onClick={signIn}
+              className="w-full bg-white text-black font-black py-4 rounded-2xl flex items-center justify-center gap-3 hover:bg-taxi-yellow transition-all active:scale-95 shadow-xl"
+            >
+              <LogIn size={20} />
+              Entrar con Google
+            </button>
+          </div>
+
+          <p className="text-center text-[10px] text-white/20 uppercase tracking-widest font-mono">
+            Professional Edition v2.0
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen pb-24 max-w-md mx-auto px-4 pt-6">
@@ -245,16 +462,15 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-xl font-bold tracking-tight">TaxiMoney</h1>
-            <p className="text-[10px] uppercase tracking-widest text-white/40 font-mono">Professional Edition</p>
+            <p className="text-[10px] uppercase tracking-widest text-white/40 font-mono">Hola, {user.displayName?.split(' ')[0]}</p>
           </div>
         </div>
-        <div className="text-right">
-          <p className="text-[10px] uppercase text-white/40 font-mono">Estado</p>
-          <div className="flex items-center gap-1.5 justify-end">
-            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-xs font-medium">En Turno</span>
-          </div>
-        </div>
+        <button 
+          onClick={logOut}
+          className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center text-white/40 hover:text-red-400 transition-colors"
+        >
+          <LogOut size={18} />
+        </button>
       </header>
 
       <main>
@@ -303,7 +519,7 @@ export default function App() {
                 <div className="glass-card p-4 rounded-2xl bg-white/5">
                   <p className="text-[10px] uppercase text-white/40 font-mono mb-1">Jefe</p>
                   <p className="text-xl font-bold">{formatCurrency(currentTotals.jefe)}</p>
-                  <p className="text-[9px] text-white/30 mt-0.5">Percent: {100 - config.driverPercent}%</p>
+                  <p className="text-[9px] text-white/30 mt-0.5">Porcentaje: {100 - config.driverPercent}%</p>
                 </div>
 
                 <div className={cn(
@@ -717,7 +933,7 @@ export default function App() {
                 </h3>
                 <p className="text-xs text-white/40">Descarga tu historial completo en formato CSV para Excel.</p>
                 <button 
-                  onClick={() => showAlert("Exportar Datos", "La función de exportación CSV se activará en la versión final publicada.")}
+                  onClick={exportToCSV}
                   className="w-full bg-white/5 hover:bg-white/10 py-3 rounded-xl text-sm font-bold transition-colors flex items-center justify-center gap-2"
                 >
                   Descargar Historial (.csv)
@@ -813,7 +1029,7 @@ export default function App() {
           )}
         >
           <BarChart3 size={20} />
-          <span className="text-[10px] font-bold uppercase tracking-tighter">Stats</span>
+          <span className="text-[10px] font-bold uppercase tracking-tighter">Estadísticas</span>
         </button>
         <button 
           onClick={() => setActiveTab('ajustes')}

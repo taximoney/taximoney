@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "trips": {
+      "title": "Trips",
+      "description": "Individual taxi trip records",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner of the trip" },
+        "amount": { "type": "number", "description": "Fare amount" },
+        "tip": { "type": "number", "description": "Tip amount" },
+        "paymentMethod": { "type": "string", "enum": ["cash", "card"], "description": "Payment method" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the trip occurred" },
+        "driverPercent": { "type": "number", "description": "Configured driver percentage at time of trip" }
+      },
+      "required": ["userId", "amount", "tip", "paymentMethod", "timestamp", "driverPercent"]
+    },
+    "userConfig": {
+      "title": "User Configuration",
+      "description": "User specific settings and preferences",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner of the config" },
+        "driverPercent": { "type": "number", "description": "Default driver percentage" },
+        "lastUpdated": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["userId", "driverPercent"]
+    }
+  },
+  "firestore": {
+    "/trips/{tripId}": {
+      "schema": "trips",
+      "description": "Collection of all taxi trips"
+    },
+    "/userConfigs/{userId}": {
+      "schema": "userConfig",
+      "description": "Individual user settings"
+    }
+  }
+}

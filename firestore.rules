@@ -1,0 +1,77 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: trips
+// Document ID: auto-generated
+// Fields:
+//   - userId: string (required) - UID of the taxi driver
+//   - amount: number (required) - Fare amount
+//   - tip: number (required) - Tip amount
+//   - paymentMethod: string (required, enum: ['cash', 'card'])
+//   - timestamp: string (required, ISO 8601)
+//   - driverPercent: number (required)
+//
+// Collection: userConfigs
+// Document ID: userId
+// Fields:
+//   - userId: string (required)
+//   - driverPercent: number (required)
+//   - lastUpdated: string (required, ISO 8601)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.userId;
+    }
+
+    function isValidTrip(data) {
+      return data.keys().hasAll(['userId', 'amount', 'tip', 'paymentMethod', 'timestamp', 'driverPercent']) &&
+             data.userId == request.auth.uid &&
+             data.amount is number && data.amount >= 0 &&
+             data.tip is number && data.tip >= 0 &&
+             data.paymentMethod in ['cash', 'card'] &&
+             data.timestamp is string &&
+             data.driverPercent is number && data.driverPercent >= 0 && data.driverPercent <= 100;
+    }
+
+    function isValidConfig(data) {
+      return data.keys().hasAll(['userId', 'driverPercent', 'lastUpdated']) &&
+             data.userId == request.auth.uid &&
+             data.driverPercent is number && data.driverPercent >= 0 && data.driverPercent <= 100 &&
+             data.lastUpdated is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /trips/{tripId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidTrip(request.resource.data);
+      allow update: if isDocOwner() && isValidTrip(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /userConfigs/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId) && isValidConfig(request.resource.data);
+    }
+  }
+}
