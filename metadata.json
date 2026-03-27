@@ -1,0 +1,5 @@
+{
+  "name": "TaxiMoney",
+  "description": "Gestión profesional de turnos, propinas y liquidaciones para taxistas con estadísticas de rendimiento.",
+  "requestFramePermissions": []
+}
