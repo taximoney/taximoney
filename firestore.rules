@@ -18,6 +18,18 @@
 //   - userId: string (required)
 //   - driverPercent: number (required)
 //   - lastUpdated: string (required, ISO 8601)
+//   - accumulatedDebt: number (optional)
+//
+// Collection: shifts
+// Document ID: auto-generated
+// Fields:
+//   - userId: string (required)
+//   - date: string (required)
+//   - month: string (required)
+//   - hours: number (required)
+//   - trips: array (optional)
+//   - totals: map (required)
+//   - timestamp: string (required, ISO 8601)
 //
 // ===============================================================
 
@@ -55,7 +67,17 @@ service cloud.firestore {
       return data.keys().hasAll(['userId', 'driverPercent', 'lastUpdated']) &&
              data.userId == request.auth.uid &&
              data.driverPercent is number && data.driverPercent >= 0 && data.driverPercent <= 100 &&
-             data.lastUpdated is string;
+             data.lastUpdated is string &&
+             (!('accumulatedDebt' in data) || data.accumulatedDebt is number);
+    }
+
+    function isValidShift(data) {
+      return data.keys().hasAll(['userId', 'date', 'month', 'hours', 'totals', 'timestamp']) &&
+             data.userId == request.auth.uid &&
+             data.hours is number && data.hours >= 0 &&
+             data.totals is map &&
+             data.timestamp is string &&
+             (!('trips' in data) || data.trips is list);
     }
 
     // ===============================================================
@@ -72,6 +94,13 @@ service cloud.firestore {
     match /userConfigs/{userId} {
       allow read: if isOwner(userId);
       allow write: if isOwner(userId) && isValidConfig(request.resource.data);
+    }
+
+    match /shifts/{shiftId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidShift(request.resource.data);
+      allow update: if isDocOwner() && isValidShift(request.resource.data);
+      allow delete: if isDocOwner();
     }
   }
 }

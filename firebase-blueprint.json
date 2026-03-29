@@ -21,9 +21,25 @@
       "properties": {
         "userId": { "type": "string", "description": "Owner of the config" },
         "driverPercent": { "type": "number", "description": "Default driver percentage" },
-        "lastUpdated": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+        "lastUpdated": { "type": "string", "format": "date-time", "description": "Last update timestamp" },
+        "accumulatedDebt": { "type": "number", "description": "Accumulated debt or credit" }
       },
-      "required": ["userId", "driverPercent"]
+      "required": ["userId", "driverPercent", "lastUpdated"]
+    },
+    "shifts": {
+      "title": "Shifts",
+      "description": "Daily shift summaries",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner of the shift" },
+        "date": { "type": "string", "description": "Date of the shift" },
+        "month": { "type": "string", "description": "Month of the shift" },
+        "hours": { "type": "number", "description": "Hours worked" },
+        "trips": { "type": "array", "description": "List of individual trips in the shift" },
+        "totals": { "type": "object", "description": "Calculated totals for the shift" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the shift was closed" }
+      },
+      "required": ["userId", "date", "month", "hours", "totals", "timestamp"]
     }
   },
   "firestore": {
@@ -34,6 +50,10 @@
     "/userConfigs/{userId}": {
       "schema": "userConfig",
       "description": "Individual user settings"
+    },
+    "/shifts/{shiftId}": {
+      "schema": "shifts",
+      "description": "Collection of all closed shifts"
     }
   }
 }
